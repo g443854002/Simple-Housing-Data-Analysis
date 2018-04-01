@@ -1,0 +1,354 @@
+---
+title: 'Predictive model for house price in King County'
+author: "Yuehao Xu, Carl Xu"
+date: 'yuehaox2'
+abstract: 'Young people are more concern about the factors that affecting the price of house.  My goal is to build a model that include all important factors and accurately predict the price. I performed a variables selection first and picked the most informative variables and applied into model. Three models are built, they are scaled KNN model, Unscaled knn model and linear regression model. I found out the the best model is scaled knn model with k = 10. This model successfully predict the price by using testing data, which roughly has the same distribution as true value.  '
+output: 
+  html_document: 
+    theme: spacelab
+    highlight: haddock
+    toc: yes
+---
+
+## Introduction
+
+In the history of human being, house have been the most important needs for human daily life. It is a place to keep our ancestors safe from wild animals. Today, it is a place that we can spend time with the whole family. In today's world, our first concern after graduating from college is whether we can buy a house to raise the family. That's the main reason most of people working so hard to make money. Now, I have a house sales dataset from Kaggle, which is is a platform for predictive modelling and analytics competitions. This dataset includes large amount of observations (about 21000) about the price of houses have been sold with about 20 features. This report is going to be building a model for predicting the house price based on the different feature. This report and the model have been created are useful insight for those who are thinking about buy a house in King County. People all have their desire features for their future home, but they do not know about the suitable price for it. Whenever you are under this situation, this report bring into play, which give you insight of affecting the price of house in king county. Below are some Exploratory Data Analysis about this dataset. 
+
+### Load Packages
+
+* This part are essentially loading the packages we need to use in this report.
+
+```{r,message=F, warning=F}
+library(caret)
+library(kableExtra)
+library(lattice)
+library(ggplot2)
+library(gridExtra)
+library(glmnet)
+library(car)
+library(knitr)
+```
+
+### First look on data. 
+
+* This part we loading the data and apply several methods to have insights on our data. 
+
+```{r}
+house = read.csv("https://daviddalpiaz.github.io/stat432sp18/projects/kc_house_data.csv")
+str(house)
+
+```
+
+* From the summary above, we have a idea on what does the data includes. By intuition, if we want to predict price from other feature. There are some features are useless predicting price (Id, date, zipcode, lat, long, yr_renovated,yr_built). Also all the variable are coding as numeric variables. We may want to force some of these variable into factor (waterfront) 
+
+```{r}
+useless = c("id", "date", "zipcode", "lat", "long", "yr_renovated","yr_built")
+
+new_house = house[,! names(house) %in% useless, drop = F]
+
+str(new_house)
+
+```
+* Now, the new dataset is being revised, and it is suitable to build model.
+
+
+* From the summary of this dataset. We can see that the lowest price is 75000, and the highest is 7700000. There is a huge range of the price variable. We might want to know what are the factor have impact on the price. Also the minimum number of bedroom and bathroom is 0, this draw my attention. It is kind of werid. 
+
+### Checking data if it needs to be cleaned.
+
+```{r}
+sapply(new_house, function(x) sum(is.na(x)))
+```
+
+* As we can see, there is no missing value in the dataset.
+
+### Visualize the data
+
+* Since our goal is to make a model that predict the price of house. We should probably need to see how price is distributed.
+
+```{r,message=F, warning=F,echo=FALSE}
+options(scipen=20)
+hist(house$price, xlim = c(0,2700000), breaks = 50,
+     main = "Home prices distribution in King County")
+
+boxplot(house$price,main = "Home prices distribution in King County")
+```
+
+* From the plot, we can see that most of house prices are around 500,000. From the boxplot we can tell that there are some extreme values in the dataset, but most of them are below 2000,000.
+
+```{r,echo=FALSE,warning=F}
+
+p1 = ggplot(new_house, aes(x = bedrooms)) + geom_bar() + labs(title = "Distribution of number of Bedrooms", x = "Number of Bedrooms")+ xlim(0, 15)
+
+p2 = ggplot(new_house, aes(x = waterfront)) + geom_bar() + labs(title = "Whether include Waterfront", x = "w/o Waterfront")
+
+p3 = ggplot(new_house, aes(x = condition)) + geom_bar() + labs(title = "Distribution of Degree of Condition", x = "Degree of Condition")
+
+p4 = ggplot(new_house, aes(x = grade)) + geom_bar() + labs(title = "Distribution of Degree of Grade", x = "Degree of Grade")
+
+grid.arrange(p1, p2, p3, p4)
+```
+
+* From the distribution plots, we can see that the number of houses with 3 bedrooms are the most. And the number of houses with medium condition(3) are the most among all level of conditions.  The number of houses with medium grade(7) are the most among all level of grades. Most of house does not have waterfront. 
+
+## Method
+
+> In this report, I will be buidling `Linear regression model` and `scaled k nearest neighbor model` and `unscaled k nearest neighbor model`. Compare those models and pick one best model out of it based on the Root Mean Sqaure Error.
+
+
+
+### Split Data 
+
+> This part is aim to split the data into train set and test set. Training data is used for train the model, here I randomly choose 80% of data as our training set. Test set is for the validation of our models. The RMSE of test set would be our guideline to pick model. The lowest the better.
+
+```{r}
+set.seed(654447675)
+house_trn_idx  = sample(nrow(new_house), size = trunc(0.80 * nrow(new_house)))
+house_trn_data = new_house[house_trn_idx, ]
+house_tst_data = new_house[-house_trn_idx, ]
+```
+
+### Variable Selection by Ridge Regression
+
+> We are relatively large amount of predictors, we may want to apply ridge regression to perform variable selection. With many predictors, fitting the full model without penalization will result in large prediction intervals. Ridge regression puts further constraints on the parameters, in the linear model.
+
+```{r}
+X = model.matrix(price ~ ., house_trn_data)[, -1]
+y = house_trn_data$price
+fit_ridge_cv = cv.glmnet(X, y, alpha = 0)
+coef(fit_ridge_cv, s = "lambda.1se")
+
+```
+
+* While we are using the ridge regression, we can see that ridge regression try to minimize the effect of "sqft_lot","sqft_living","sqft_above","sqft_basement","sqft_living15","sqft_lot15", we might consider delete these variables and keep other variables in the data.
+
+
+```{r}
+not_use = c("sqft_lot","sqft_living","sqft_above","sqft_basement","sqft_living15","sqft_lot15")
+house_trn_data = house_trn_data[,! names(house_trn_data) %in% not_use, drop = F]
+house_tst_data = house_tst_data[,! names(house_tst_data) %in% not_use, drop = F]
+
+```
+
+* After we have new selected train and test dataset We can train the model with it.
+
+**Description of Variables keeps in the dataset are in the `Appendix part`**
+
+### Train Linear Model
+
+```{r}
+set.seed(12)
+
+house_lm_mod = train(
+  price ~ .,
+  data = house_trn_data,
+  trControl = trainControl(method = "cv", number = 5),
+  method = "lm"
+)
+```
+
+* While I am training the model, I also applied 5 folds cross validation.
+
+### Train unscaled KNN Model
+
+```{r}
+set.seed(12)
+house_knn_mod = train(
+  price ~.,
+  data = house_trn_data,
+  trControl = trainControl(method = "cv", number = 5),
+  method = "knn",
+  tuneGrid = expand.grid(k = c(1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50))
+)
+```
+
+* While I am training the model, I also applied 5 folds cross validation with k = (1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50)
+
+### Train scaled KNN model
+
+```{r}
+set.seed(12)
+house_knn_mod_scale = train(
+  price ~.,
+  data = house_trn_data,
+  trControl = trainControl(method = "cv", number = 5),
+  preProcess = c("center", "scale"),
+  method = "knn",
+  tuneGrid = expand.grid(k = c(1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50))
+)
+```
+
+* While I am training the model, I also applied 5 folds cross validation with k = (1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50)
+
+### Plot of Error for scaled and non-scaled KNN Model
+
+```{r, echo= FALSE}
+par(mfrow = c(2,2))
+plot(house_knn_mod, main = 'Non-Scaled Knn Model Error')
+plot(house_knn_mod_scale, main = 'Scaled Knn Model Error')
+
+```
+
+* From the plot above we can see that both KNN models perform best when k = 10 since they have the lowest error
+
+### Functions calculating RMSE
+
+> Below include two functions that facilitate us to calculate the RMSE for each model.
+
+```{r}
+calc_rmse = function(actual, predicted) {
+  sqrt(mean((actual - predicted) ^ 2))
+}
+
+get_best_result = function(caret_fit) {
+  best = which(rownames(caret_fit$results) == rownames(caret_fit$bestTune))
+  best_result = caret_fit$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+```
+
+## Result
+
+### RMSE result table for models
+
+```{r,echo=FALSE}
+reg_results = data.frame(
+  method = c("Linear Regression", "KNN Unscaled", "KNN Scaled"),
+  cv = c(
+    get_best_result(house_lm_mod)$RMSE,
+    get_best_result(house_knn_mod)$RMSE,
+    get_best_result(house_knn_mod_scale)$RMSE
+  ),
+  test = c(
+    calc_rmse(house_tst_data$price, predict(house_lm_mod, house_tst_data)),
+    calc_rmse(house_tst_data$price, predict(house_knn_mod, house_tst_data)),
+    calc_rmse(house_tst_data$price, predict(house_knn_mod_scale, house_tst_data)))
+)
+
+colnames(reg_results) = c("Method", "Train RMSE", "Test RMSE")
+kable_styling(kable(reg_results, format = "html", digits = 2), full_width = FALSE)
+```
+
+* As table shown above, scaled KNN model would be the best model among three models since it has the lowest RMSE.
+
+```{r}
+house_knn_mod_scale$bestTune
+```
+
+* In the scaled KNN model, when K = 10, this model perform the best.
+
+**Scaled Model with k = 10 are the best model in this analysis**
+
+## Discussion
+
+```{r,echo=FALSE}
+par(mfrow = c(1,2))
+hist(predict(house_knn_mod_scale, newdata = house_tst_data),
+     xlim = c(0, 2000000),
+     breaks = 35,
+     main = "Predicted Price",
+     xlab = "Predicted")
+hist(house$price, xlim = c(0,2700000), breaks = 50,
+     main = "Home prices in King County",
+     xlab = "Price")
+
+
+```
+
+* The histogram above is the prediction result by using test dataset and the scaled knn model. We can tell that it is quite similar to the original price histogram we implement in the introduction part, which indicates this model are making some of good prediction.
+
+```{r}
+summary(predict(house_knn_mod_scale, newdata = house_tst_data))
+```
+```{r}
+summary(house$price)
+```
+
+* Here are some statistics about the prediction values, which seems reasonable. And it is within a reasonable range. From the comparison of two set of statistics, we can tell that the mean and median are very close. However, in our original data set, the price is range from 75000 to 7700000. And the predicted value from my model is from 210950 to 2787808. From previous analysis, we know that most of price values in the original dataset are below the 2000000, others might treated as extreme values. And our knn model with k = 10 seems eliminate the effect of extreme value, which is reasonable because we take k = 10. If there is 1 extreme value, and the rest are normal values, which is 9/10. After we take the mean of these ten values, it brings the predicted price to normal values. 
+
+* But I think there is shortcoming predicting a really expensive house. In the introduction part, we see that the most number of bedrooms are 33, a house with 33 bedrooms must be super expensive. And our predicted value has maximum of 2787808, which might not suitable predicting those. We might consider further evaluation of models or building different model. For now, this model can be used to predict some medium price house, around 500000. And this number is kind of affordable for yound people if they are willing to take loans. 
+
+
+## Appendix
+
+### Data Variables Description:
+
+> This part describe the variables are used in the final model.
+
+**price** - prediction target (numeric)
+
+**bedrooms** - Number of Bedrooms (numeric)
+
+**bathrooms** - Number of bathrooms (numeric)
+
+**floors** - Total floors in house (numeric)
+
+**waterfront** - House which has a view to a waterfront (categorical)
+
+**view** - Has been viewed (numeric)
+
+**condition** - How good the condition is (overall) (numeric)
+
+**grade** - Overall grade given to the housing unit, based on King County grading system (numeric)
+
+
+> This part describe the all variables in the data.
+
+**id** - Notation for a house (numeric)
+
+**date** - Date house was sold (numeric)
+
+**sqft_living** - square footage of the home (numeric)
+
+**sqft_lot** - square footage of the lot (numeric)
+
+**sqft_above** - square footage of house apart from basement (numeric)
+
+**sqft_basement** - square footage of the basement (numeric)
+
+**yr_built** - Built Year (numeric)
+
+**yr_renovated** - Year when house was renovated (numeric)
+
+**zipcode** - zip (numeric)
+
+**lat** - Latitude coordinate (numeric)
+
+**long** - Longitude coordinate (numeric)
+
+**sqft_living15** - Living room area in 2015(implies-- some renovations)This might or might not have affected the lotsize area (numeric)
+
+**sqft_lot15** - lotSize area in 2015(implies-- some renovations) (numeric)
+
+**price** - prediction target (numeric)
+
+**bedrooms** - Number of Bedrooms (numeric)
+
+**bathrooms** - Number of bathrooms (numeric)
+
+**floors** - Total floors in house (numeric)
+
+**waterfront** - House which has a view to a waterfront (categorical)
+
+**view** - Has been viewed (numeric)
+
+**condition** - How good the condition is (overall) (numeric)
+
+**grade** - Overall grade given to the housing unit, based on King County grading system (numeric)
+
+
+### Extra EDA
+
+#### Data basic information
+
+```{r}
+head(house)
+summary(house)
+```
+
+
+
+
+
+
